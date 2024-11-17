@@ -4,7 +4,7 @@ A service that automatically monitors directories for video files (MKV/MP4), ext
 
 ## Features
 
-- 🎬 Monitors multiple directories for new video files
+- 🎬 Monitors multiple directories and their subdirectories for new video files
 - 📥 Extracts embedded subtitles from MKV and MP4 files
 - 🔍 Identifies subtitle language and processes only English subtitles
 - 🔄 Maintains subtitle formatting and timing
@@ -52,17 +52,26 @@ export OPENAI_API_KEY=<your-openai-api-key>
 
 2. Run the service:
 
-#### Watch a single directory
+#### Watch directories and their subdirectories
+
+The service automatically watches all subdirectories within the specified directories. For example:
 
 ```bash
 python main.py --watch-dirs /path/to/videos
 ```
 
+This will watch `/path/to/videos` and all its subdirectories for video files.
 
-### Watch multiple directories
+You can also specify multiple root directories:
 
 ```bash
 python main.py --watch-dirs /path/to/videos1 /path/to/videos2
+```
+
+Or using environment variables:
+
+```bash
+export WATCH_DIRECTORY="/path/to/videos1,/path/to/videos2"
 ```
 
 

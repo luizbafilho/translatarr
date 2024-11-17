@@ -99,7 +99,7 @@ Rules:
 
 class TranslationTracker:
     def __init__(self, directory):
-        self.directory = directory
+        self.directory = os.path.abspath(directory)
         self.tracker_file = os.path.join(directory, '.subtitle_tracker.json')
         self.load_tracker()
 
@@ -121,13 +121,25 @@ class TranslationTracker:
         except Exception as e:
             logger.error(f"Error saving tracker file: {str(e)}")
 
+    def get_relative_path(self, file_path: str) -> str:
+        """Convert absolute path to relative path from tracker directory."""
+        abs_file = os.path.abspath(file_path)
+        try:
+            # Get relative path from the watch directory
+            rel_path = os.path.relpath(abs_file, self.directory)
+            return rel_path
+        except ValueError:
+            # If file is not under watch directory, use full path
+            return abs_file
+
     def add_translated_file(self, file_path: str, subtitle_count: int):
         try:
-            relative_path = os.path.relpath(file_path, self.directory)
+            relative_path = self.get_relative_path(file_path)
             self.tracked_files[relative_path] = {
                 "translated_at": datetime.now().isoformat(),
                 "subtitle_count": subtitle_count,
-                "file_size": os.path.getsize(file_path)
+                "file_size": os.path.getsize(file_path),
+                "absolute_path": os.path.abspath(file_path)
             }
             self.save_tracker()
         except Exception as e:
@@ -135,10 +147,28 @@ class TranslationTracker:
 
     def is_file_translated(self, file_path: str) -> bool:
         try:
-            relative_path = os.path.relpath(file_path, self.directory)
+            relative_path = self.get_relative_path(file_path)
+            abs_file = os.path.abspath(file_path)
+
             if relative_path in self.tracked_files:
+                tracked_info = self.tracked_files[relative_path]
                 current_size = os.path.getsize(file_path)
-                return current_size == self.tracked_files[relative_path]["file_size"]
+
+                # Check if file size matches and the absolute path is correct
+                if (current_size == tracked_info["file_size"] and
+                    abs_file == tracked_info.get("absolute_path", abs_file)):
+                    logger.debug(f"File already translated: {relative_path}")
+                    return True
+                else:
+                    logger.debug(f"File size or path mismatch for {relative_path}")
+                    return False
+
+            # Check if file exists in tracker with a different relative path
+            for tracked_path, info in self.tracked_files.items():
+                if abs_file == info.get("absolute_path"):
+                    logger.debug(f"File found in tracker with different path: {tracked_path}")
+                    return True
+
             return False
         except Exception as e:
             logger.error(f"Error checking file translation status: {str(e)}")
@@ -149,9 +179,15 @@ class VideoHandler(FileSystemEventHandler):
         self.watch_directory = watch_directory
         self.translator = SubtitleTranslator()
         self.tracker = TranslationTracker(watch_directory)
+        self.loop = asyncio.get_event_loop()
 
     async def process_video(self, video_path):
         try:
+            # Check if the video file is already translated
+            if self.tracker.is_file_translated(video_path):
+                logger.info(f"Video file already translated: {video_path}")
+                return
+
             # Get video information using ffmpeg
             probe = ffmpeg.probe(video_path)
 
@@ -161,6 +197,8 @@ class VideoHandler(FileSystemEventHandler):
 
             if not subtitle_streams:
                 logger.info(f"No subtitles found in {video_path}")
+                # Track video file even if it has no subtitles
+                self.tracker.add_translated_file(video_path, 0)
                 return
 
             # Check for Portuguese subtitles first
@@ -168,6 +206,7 @@ class VideoHandler(FileSystemEventHandler):
                 if 'tags' in stream and 'language' in stream['tags']:
                     if stream['tags']['language'].lower() in ['por', 'pt', 'pt-br']:
                         logger.info(f"Portuguese subtitles found in {video_path}, skipping processing")
+                        self.tracker.add_translated_file(video_path, 0)
                         return
 
             # Extract English subtitles
@@ -188,11 +227,18 @@ class VideoHandler(FileSystemEventHandler):
 
                         logger.info(f"Successfully extracted English subtitles to {output_path}")
 
+                        # Get subtitle count before translation
+                        subtitle_count = len(pysrt.open(output_path))
+
                         # Translate the subtitles
                         await self.translate_subtitles(output_path)
+                        # Track the video file with the actual subtitle count
+                        self.tracker.add_translated_file(video_path, subtitle_count)
                         return
 
             logger.info(f"No English subtitles found in {video_path}")
+            # Track video file even if no English subtitles found
+            self.tracker.add_translated_file(video_path, 0)
 
         except Exception as e:
             logger.error(f"Error processing {video_path}: {str(e)}")
@@ -204,11 +250,11 @@ class VideoHandler(FileSystemEventHandler):
         if event.src_path.lower().endswith(('.mkv', '.mp4')):
             if not self.tracker.is_file_translated(event.src_path):
                 logger.info(f"New video file detected: {event.src_path}")
-                # Create new event loop for async operation
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.process_video(event.src_path))
-                loop.close()
+                # Use the existing event loop instead of creating a new one
+                asyncio.run_coroutine_threadsafe(
+                    self.process_video(event.src_path),
+                    self.loop
+                )
             else:
                 logger.info(f"File already translated: {event.src_path}")
 
@@ -221,7 +267,7 @@ class VideoHandler(FileSystemEventHandler):
             logger.info(f"Starting translation of {total_subs} subtitles")
 
             # Translate each subtitle while maintaining format
-            for i, sub in enumerate(subs):
+            for i, sub in enumerate(subs[:5]):
                 logger.info(f"Translating subtitle {i+1}/{total_subs}")
                 translated_text = await self.translator.translate_text(sub.text)
                 sub.text = translated_text
@@ -236,9 +282,6 @@ class VideoHandler(FileSystemEventHandler):
             # Rename the translated file to the original name
             os.rename(translated_path, srt_path)
 
-            # Track the successful translation
-            self.tracker.add_translated_file(srt_path, total_subs)
-
         except Exception as e:
             logger.error(f"Error translating subtitles: {str(e)}")
 
@@ -251,21 +294,19 @@ async def process_single_subtitle(subtitle_path: str):
         logger.error(f"Error processing subtitle file: {str(e)}")
 
 async def process_existing_files(directory: str):
-    """Scan directory for existing video files and process untranslated ones."""
-    logger.info(f"Scanning directory for existing files: {directory}")
+    """Scan directory and subdirectories for existing video files and process untranslated ones."""
+    logger.info(f"Scanning directory and subdirectories for existing files: {directory}")
     handler = VideoHandler(directory)
 
-    for file in os.listdir(directory):
-        file_path = os.path.join(directory, file)
-        if not os.path.isfile(file_path):
-            continue
-
-        if file_path.lower().endswith(('.mkv', '.mp4')):
-            if not handler.tracker.is_file_translated(file_path):
-                logger.info(f"Found untranslated video file: {file_path}")
-                await handler.process_video(file_path)
-            else:
-                logger.debug(f"Skipping already translated file: {file_path}")
+    for root, _, files in os.walk(directory):
+        for file in files:
+            file_path = os.path.join(root, file)
+            if file_path.lower().endswith(('.mkv', '.mp4')):
+                if not handler.tracker.is_file_translated(file_path):
+                    logger.info(f"Found untranslated video file: {file_path}")
+                    await handler.process_video(file_path)
+                else:
+                    logger.debug(f"Skipping already translated file: {file_path}")
 
 def validate_watch_directories(directories: List[str]) -> List[str]:
     """
@@ -305,6 +346,10 @@ def main():
     sentry_sdk.profiler.start_profiler()
 
     try:
+        # Set up the event loop at the application level
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         # Ensure OpenAI API key is set
         if not os.getenv('OPENAI_API_KEY'):
             logger.error("OPENAI_API_KEY environment variable is not set")
@@ -323,8 +368,7 @@ def main():
                 return
 
             logger.info(f"Processing single subtitle file: {args.subtitle}")
-            import asyncio
-            asyncio.run(process_single_subtitle(args.subtitle))
+            loop.run_until_complete(process_single_subtitle(args.subtitle))
             return
 
         try:
@@ -336,9 +380,8 @@ def main():
             return
 
         # Process existing files in all directories first
-        import asyncio
         for directory in watch_directories:
-            asyncio.run(process_existing_files(directory))
+            loop.run_until_complete(process_existing_files(directory))
 
         # Create observers for each directory
         observers = []
@@ -346,19 +389,20 @@ def main():
             logger.info(f"Setting up observer for directory: {watch_directory}")
             event_handler = VideoHandler(watch_directory)
             observer = Observer()
-            observer.schedule(event_handler, watch_directory, recursive=False)
+            observer.schedule(event_handler, watch_directory, recursive=True)
             observer.start()
             observers.append(observer)
 
-        logger.info(f"Started watching {len(observers)} directories")
+        logger.info(f"Started watching {len(observers)} directories (including subdirectories)")
 
         try:
-            while True:
-                time.sleep(1)
+            # Keep the main thread alive while running the event loop
+            loop.run_forever()
         except KeyboardInterrupt:
             logger.info("Stopping the service...")
             for observer in observers:
                 observer.stop()
+            loop.stop()
 
         # Join all observers
         for observer in observers:
@@ -369,6 +413,11 @@ def main():
         sentry_sdk.capture_exception(e)
         raise
     finally:
+        # Clean up the event loop
+        try:
+            loop.close()
+        except Exception as e:
+            logger.error(f"Error closing event loop: {e}")
         # Stop profiling before exit
         sentry_sdk.profiler.stop_profiler()
 
