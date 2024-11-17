@@ -267,7 +267,7 @@ class VideoHandler(FileSystemEventHandler):
             logger.info(f"Starting translation of {total_subs} subtitles")
 
             # Translate each subtitle while maintaining format
-            for i, sub in enumerate(subs[:5]):
+            for i, sub in enumerate(subs):
                 logger.info(f"Translating subtitle {i+1}/{total_subs}")
                 translated_text = await self.translator.translate_text(sub.text)
                 sub.text = translated_text
