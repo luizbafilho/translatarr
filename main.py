@@ -275,6 +275,12 @@ def validate_watch_directories(directories: List[str]) -> List[str]:
     if not directories:
         raise ValueError("No watch directories specified. Use --watch-dirs or WATCH_DIRECTORY environment variable.")
 
+    # Split comma-separated directories if coming from environment variable
+    if isinstance(directories, str):
+        directories = [d.strip() for d in directories.split(',')]
+    elif len(directories) == 1 and isinstance(directories[0], str):
+        directories = [d.strip() for d in directories[0].split(',')]
+
     valid_directories = []
     for directory in directories:
         if not os.path.exists(directory):
@@ -322,10 +328,9 @@ def main():
             return
 
         try:
-            # Normal directory watching mode
-            watch_directories = validate_watch_directories(
-                args.watch_dirs or [os.getenv('WATCH_DIRECTORY')]
-            )
+            # Get directories from CLI args or environment variable
+            watch_dirs = args.watch_dirs or os.getenv('WATCH_DIRECTORY')
+            watch_directories = validate_watch_directories(watch_dirs)
         except ValueError as e:
             logger.error(str(e))
             return

@@ -77,7 +77,8 @@ python main.py --subtitle /path/to/subtitle.srt
 The service can be configured using environment variables:
 
 - `OPENAI_API_KEY`: Your OpenAI API key (required)
-- `WATCH_DIRECTORY`: Default directory to watch (if not specified via CLI)
+- `WATCH_DIRECTORY`: Default directories to watch, comma-separated (if not specified via CLI)
+  Example: `/path/to/videos1,/path/to/videos2,/path/to/videos3`
 - `SENTRY_DSN`: Sentry DSN for error monitoring (optional)
 - `ENVIRONMENT`: Environment name for Sentry (default: production)
 
